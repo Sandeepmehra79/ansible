@@ -1,0 +1,82 @@
+---
+- hosts: all
+  vars:
+    password: !vault |
+          $ANSIBLE_VAULT;1.1;AES256
+          39353235333164343732383565353132373363373530653539616438336166623462306364346234
+          3236623666303938303934323133626133336438613737380a363339363130333732356330343563
+          30643036326434313263363439636261636261393162396639666331363535383831346236383366
+          3332303766616337630a366236393431636236666338303266376130353531306137303535363131
+          3331
+  become: true
+  tasks:
+    - name: Install required packages
+      yum:
+        name:
+          - samba-common-tools
+          - realmd
+          - oddjob
+          - oddjob-mkhomedir
+          - sssd
+          - adcli
+          - krb5-workstation
+        state: present
+
+    - name: Discover the realm
+      command: realm discover alcatrace.local
+      register: realm_discovery_result
+      changed_when: false
+
+    - debug:
+        msg: "Realm discovery output: {{ realm_discovery_result.stdout }}"
+
+
+    - name: Join the AD domain
+      #command: echo "{{ password }}" | realm join --user=administrator alcatrace.local
+      command: /bin/bash  -c "echo {{ password }} | realm join --user=administrator alcatrace.local" 
+      register: realm_join_result
+      retries: 3
+      delay: 5
+      until: realm_join_result.rc == 0
+
+#    - debug:
+#        msg: "Realm join output: {{ realm_join_result.stdout }}"
+
+    - name: Verify domain join (optional)
+      command: id administrator@alcatrace.local
+      changed_when: false
+      register: id_result
+
+    - debug:
+        msg: "Domain join verification: {{ id_result.stdout }}"
+
+    - name: Configure SSSD (Optional - if needed for specific configurations)
+      blockinfile:
+        path: /etc/sssd/sssd.conf
+        block: |
+          [sssd]
+          domains = alcatrace.local
+          config_file_version = 2
+          services = nss, pam
+
+          [domain/alcatrace.local]
+          ad_domain = alcatrace.local
+          krb5_realm = ALCATRACE.LOCAL
+          realmd_tags = manages-system joined-with-samba
+          cache_credentials = True
+          id_provider = ad
+          krb5_store_password_if_offline = True
+          default_shell = /bin/bash
+          ldap_id_mapping = True
+          use_fully_qualified_names = False
+          fallback_homedir = /home/%u@%d
+          access_provider = ad
+        create: yes
+      notify: restart sssd
+
+  handlers:
+    - name: restart sssd
+      service:
+        name: sssd
+        state: restarted
+
